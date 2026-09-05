@@ -35,6 +35,8 @@ pub struct Buttons {
 }
 
 impl Buttons {
+    // With the 20 ms polling interval in main, a button must stay released for about 60 ms
+    // before another press can register. This filters switch bounce but also merges faster taps.
     const RELEASE_SAMPLES: u8 = 3;
 
     /// Configure the P4X-EYE's rear navigation buttons.
