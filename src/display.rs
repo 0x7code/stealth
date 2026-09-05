@@ -148,14 +148,8 @@ impl Display {
         let frame_duration = BOOT_ANIMATION_DURATION / BOOT_ANIMATION_FRAMES;
 
         self.clear(Rgb565::BLACK)?;
-        for &(x, y, width, height) in &SPINNER_SEGMENTS {
-            // self.fill_rectangle(
-            //     Rectangle::new(Point::new(x, y), Size::new(width, height)),
-            //     Rgb565::BLUE,
-            // )?;
-        }
         self.draw(&Text::with_text_style(
-            "booting up...",
+            "booting ...",
             Point::new(i32::from(LCD_WIDTH) / 2, i32::from(LCD_HEIGHT) / 2),
             MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE),
             TextStyleBuilder::new()
@@ -166,18 +160,6 @@ impl Display {
 
         for frame in 0..BOOT_ANIMATION_FRAMES {
             let active_segment = (frame as usize) % SPINNER_SEGMENTS.len();
-
-            // Each frame changes only the previous and current pulse: two small SPI
-            // transfers, rather than repainting the full screen and causing a black flash.
-            if frame != 0 {
-                let previous_segment =
-                    (active_segment + SPINNER_SEGMENTS.len() - 1) % SPINNER_SEGMENTS.len();
-                let (x, y, width, height) = SPINNER_SEGMENTS[previous_segment];
-                // self.fill_rectangle(
-                //     Rectangle::new(Point::new(x, y), Size::new(width, height)),
-                //     Rgb565::BLUE,
-                // )?;
-            }
 
             let (x, y, width, height) = SPINNER_SEGMENTS[active_segment];
             self.fill_rectangle(
