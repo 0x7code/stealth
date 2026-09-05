@@ -10,7 +10,9 @@ fn main() {
 
     log::info!("starting P4X-EYE display");
     let mut display = display::Display::init().expect("display initialization failed");
-    display.run_color_test().expect("display color test failed");
+    display
+        .run_boot_animation()
+        .expect("display boot animation failed");
 
     // Keep `display` in scope: it owns the LCD power, backlight, SPI, and controller drivers.
     loop {
