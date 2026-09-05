@@ -142,37 +142,17 @@ impl Display {
         Ok(())
     }
 
-    /// Temporary hardware test: show red, green, blue, then centered white text.
-    pub fn run_color_test(&mut self) -> anyhow::Result<()> {
-        for (name, color) in [
-            ("red", Rgb565::RED),
-            ("green", Rgb565::GREEN),
-            ("blue", Rgb565::BLUE),
-        ] {
-            log::info!("display: {name}");
-            self.clear(color)?;
-            FreeRtos::delay_ms(1_000);
-        }
-
-        self.show_message("ready")?;
-
-        log::info!("display: ready");
-        Ok(())
-    }
-
     /// Play a two-second, asset-free boot animation and leave the display ready for the app.
     pub fn run_boot_animation(&mut self) -> anyhow::Result<()> {
         let started = std::time::Instant::now();
         let frame_duration = BOOT_ANIMATION_DURATION / BOOT_ANIMATION_FRAMES;
 
-        // The ST7789 retains pixels in its own display RAM. Establish the background once;
-        // clearing on every frame is visible as a black flash while SPI writes the segments.
         self.clear(Rgb565::BLACK)?;
         for &(x, y, width, height) in &SPINNER_SEGMENTS {
-            self.fill_rectangle(
-                Rectangle::new(Point::new(x, y), Size::new(width, height)),
-                Rgb565::BLUE,
-            )?;
+            // self.fill_rectangle(
+            //     Rectangle::new(Point::new(x, y), Size::new(width, height)),
+            //     Rgb565::BLUE,
+            // )?;
         }
         self.draw(&Text::with_text_style(
             "booting up...",
@@ -193,10 +173,10 @@ impl Display {
                 let previous_segment =
                     (active_segment + SPINNER_SEGMENTS.len() - 1) % SPINNER_SEGMENTS.len();
                 let (x, y, width, height) = SPINNER_SEGMENTS[previous_segment];
-                self.fill_rectangle(
-                    Rectangle::new(Point::new(x, y), Size::new(width, height)),
-                    Rgb565::BLUE,
-                )?;
+                // self.fill_rectangle(
+                //     Rectangle::new(Point::new(x, y), Size::new(width, height)),
+                //     Rgb565::BLUE,
+                // )?;
             }
 
             let (x, y, width, height) = SPINNER_SEGMENTS[active_segment];
