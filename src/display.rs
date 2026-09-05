@@ -6,9 +6,8 @@ use embedded_graphics::{
 };
 use esp_idf_hal::{
     delay::{Ets, FreeRtos},
-    gpio::{Output, PinDriver},
-    peripherals::Peripherals,
-    spi::{config::Config as SpiConfig, SpiDeviceDriver, SpiDriver, SpiDriverConfig},
+    gpio::{Output, OutputPin, PinDriver},
+    spi::{config::Config as SpiConfig, SpiDeviceDriver, SpiDriver, SpiDriverConfig, SPI2},
     units::FromValueType,
 };
 use mipidsi::{
@@ -35,26 +34,33 @@ pub struct Display {
 
 impl Display {
     /// Enable, reset, and initialize the P4X-EYE's ST7789 display.
-    pub fn init() -> anyhow::Result<Self> {
-        let peripherals = Peripherals::take()?;
-
-        let mut lcd_enable = PinDriver::output(peripherals.pins.gpio12)?;
+    pub fn init(
+        spi2: SPI2<'static>,
+        lcd_enable_pin: impl OutputPin + 'static,
+        backlight_pin: impl OutputPin + 'static,
+        reset_pin: impl OutputPin + 'static,
+        dc_pin: impl OutputPin + 'static,
+        clock_pin: impl OutputPin + 'static,
+        data_pin: impl OutputPin + 'static,
+        chip_select_pin: impl OutputPin + 'static,
+    ) -> anyhow::Result<Self> {
+        let mut lcd_enable = PinDriver::output(lcd_enable_pin)?;
         lcd_enable.set_high()?;
 
         // The board's LCD backlight is active-low.
-        let mut backlight = PinDriver::output(peripherals.pins.gpio20)?;
+        let mut backlight = PinDriver::output(backlight_pin)?;
         backlight.set_low()?;
 
-        let reset = PinDriver::output(peripherals.pins.gpio15)?;
-        let dc = PinDriver::output(peripherals.pins.gpio19)?;
+        let reset = PinDriver::output(reset_pin)?;
+        let dc = PinDriver::output(dc_pin)?;
 
         let spi_config = SpiConfig::new().baudrate(40.MHz().into());
         let spi = SpiDeviceDriver::new_single(
-            peripherals.spi2,
-            peripherals.pins.gpio17,
-            peripherals.pins.gpio16,
+            spi2,
+            clock_pin,
+            data_pin,
             None::<esp_idf_hal::gpio::AnyInputPin>,
-            Some(peripherals.pins.gpio18),
+            Some(chip_select_pin),
             &SpiDriverConfig::new(),
             &spi_config,
         )?;
@@ -95,6 +101,24 @@ impl Display {
             .map_err(|err| anyhow::anyhow!("failed to draw to display: {err:?}"))
     }
 
+    /// Replace the current screen with a centered white confirmation message.
+    pub fn show_message(&mut self, message: &str) -> anyhow::Result<()> {
+        self.clear(Rgb565::BLACK)?;
+
+        let text_style = TextStyleBuilder::new()
+            .alignment(Alignment::Center)
+            .baseline(Baseline::Middle)
+            .build();
+        self.draw(&Text::with_text_style(
+            message,
+            Point::new(i32::from(LCD_WIDTH) / 2, i32::from(LCD_HEIGHT) / 2),
+            MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE),
+            text_style,
+        ))?;
+
+        Ok(())
+    }
+
     /// Temporary hardware test: show red, green, blue, then centered white text.
     pub fn run_color_test(&mut self) -> anyhow::Result<()> {
         for (name, color) in [
@@ -107,16 +131,7 @@ impl Display {
             FreeRtos::delay_ms(1_000);
         }
 
-        let text_style = TextStyleBuilder::new()
-            .alignment(Alignment::Center)
-            .baseline(Baseline::Middle)
-            .build();
-        self.draw(&Text::with_text_style(
-            "ready",
-            Point::new(i32::from(LCD_WIDTH) / 2, i32::from(LCD_HEIGHT) / 2),
-            MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE),
-            text_style,
-        ))?;
+        self.show_message("ready")?;
 
         log::info!("display: ready");
         Ok(())
