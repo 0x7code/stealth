@@ -8,9 +8,7 @@ use anyhow::Context;
 use esp_idf_svc::sys;
 
 /// A running OV2710 video stream.
-pub struct Camera {
-    running: bool,
-}
+pub struct Camera;
 
 /// One completed camera buffer borrowed from ESP-Video.
 pub struct CameraFrame<'camera> {
@@ -33,7 +31,7 @@ impl Camera {
         sys::EspError::convert(unsafe { sys::camera_bridge_start(&config) })
             .context("failed to initialize the OV2710 camera")?;
 
-        Ok(Self { running: true })
+        Ok(Self)
     }
 
     /// Wait for a completed camera frame.
@@ -87,8 +85,6 @@ impl Drop for CameraFrame<'_> {
 
 impl Drop for Camera {
     fn drop(&mut self) {
-        if self.running {
-            let _ = unsafe { sys::camera_bridge_stop() };
-        }
+        let _ = unsafe { sys::camera_bridge_stop() };
     }
 }
