@@ -6,7 +6,7 @@ use embedded_graphics::{
     text::{Alignment, Baseline, Text, TextStyleBuilder},
 };
 use esp_idf_hal::{
-    delay::{Ets, FreeRtos},
+    delay::Ets,
     gpio::{Output, PinDriver},
     peripherals::Peripherals,
     spi::{config::Config as SpiConfig, SpiDeviceDriver, SpiDriver, SpiDriverConfig},
