@@ -1,6 +1,6 @@
 use embedded_graphics::{
     mono_font::{ascii::FONT_10X20, MonoTextStyle},
-    pixelcolor::Rgb565,
+    pixelcolor::{raw::RawU16, Rgb565},
     prelude::*,
     primitives::Rectangle,
     text::{Alignment, Baseline, Text, TextStyleBuilder},
@@ -162,6 +162,72 @@ impl Display {
         ))?;
 
         Ok(())
+    }
+
+    /// Scale a packed, little-endian RGB565 camera frame to fill the LCD.
+    ///
+    /// The camera keeps ownership of `pixels`; this method streams each sampled pixel straight
+    /// to one LCD address window. No 240×240 framebuffer is allocated or cleared between frames.
+    pub fn draw_rgb565_scaled(
+        &mut self,
+        pixels: &[u8],
+        source_width: u32,
+        source_height: u32,
+        source_stride: u32,
+    ) -> anyhow::Result<()> {
+        let required_bytes = usize::try_from(source_stride)
+            .ok()
+            .and_then(|stride| {
+                usize::try_from(source_height)
+                    .ok()
+                    .and_then(|height| stride.checked_mul(height))
+            })
+            .ok_or_else(|| anyhow::anyhow!("camera frame dimensions overflow"))?;
+
+        let minimum_stride = source_width
+            .checked_mul(2)
+            .ok_or_else(|| anyhow::anyhow!("camera frame width overflows RGB565 stride"))?;
+        if source_width == 0
+            || source_height == 0
+            || source_stride < minimum_stride
+            || pixels.len() < required_bytes
+        {
+            anyhow::bail!("camera returned an invalid RGB565 frame");
+        }
+
+        let lcd_width = u32::from(LCD_WIDTH);
+        let lcd_height = u32::from(LCD_HEIGHT);
+        let source_stride = usize::try_from(source_stride)
+            .map_err(|_| anyhow::anyhow!("camera stride does not fit usize"))?;
+
+        // Center-crop the rectangular sensor image to the LCD's square aspect ratio, avoiding
+        // stretched faces and objects. Mipidsi batches this iterator into its 512-byte SPI
+        // transfer buffer, so this remains one LCD window rather than 57,600 independent pixel
+        // transactions.
+        let crop_size = source_width.min(source_height);
+        let crop_x = (source_width - crop_size) / 2;
+        let crop_y = (source_height - crop_size) / 2;
+        let scaled_pixels = (0..lcd_height * lcd_width).map(|display_pixel| {
+            let x = display_pixel % lcd_width;
+            let y = display_pixel / lcd_width;
+            let source_x = crop_x + x * crop_size / lcd_width;
+            let source_y = crop_y + y * crop_size / lcd_height;
+            let byte_offset = usize::try_from(source_y).expect("source coordinate fits usize")
+                * source_stride
+                + usize::try_from(source_x).expect("source coordinate fits usize") * 2;
+
+            Rgb565::from(RawU16::new(u16::from_le_bytes([
+                pixels[byte_offset],
+                pixels[byte_offset + 1],
+            ])))
+        });
+
+        self.panel
+            .fill_contiguous(
+                &Rectangle::new(Point::zero(), Size::new(lcd_width, lcd_height)),
+                scaled_pixels,
+            )
+            .map_err(|err| anyhow::anyhow!("failed to stream camera frame to display: {err:?}"))
     }
 
     /// Play a two-second, asset-free boot animation and leave the display ready for the app.
