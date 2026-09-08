@@ -52,12 +52,7 @@ impl CameraFrame<'_> {
     pub fn bytes(&self) -> &[u8] {
         // `camera_bridge_next_frame` validates the pointer and length before constructing this
         // object. The buffer stays queued out of the driver until this frame is dropped.
-        unsafe {
-            std::slice::from_raw_parts(
-                self.raw.data.cast(),
-                usize::try_from(self.raw.length).expect("camera buffer length fits usize"),
-            )
-        }
+        unsafe { std::slice::from_raw_parts(self.raw.data.cast(), self.raw.length) }
     }
 
     pub fn width(&self) -> u32 {
