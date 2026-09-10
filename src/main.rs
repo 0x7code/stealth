@@ -93,7 +93,7 @@ fn main() {
                         log::error!("failed to save camera frame: {error:#}");
                         Some("save error")
                     }
-                }
+                },
             }
         } else if let Some(button) = button {
             {
