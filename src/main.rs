@@ -74,17 +74,23 @@ fn main() {
         let capture_requested = matches!(button, Some(buttons::Button::Enter))
             || matches!(rotary_event, Some(rotary::RotaryEvent::Pressed));
         let button_message = if capture_requested {
-            match frame
-                .encode_jpeg()
-                .and_then(|jpeg| sd_card.save_jpeg(jpeg.bytes()))
-            {
-                Ok(path) => {
-                    log::info!("saved camera frame to {path}");
-                    Some("saved")
-                }
+            match sd_card.mount() {
                 Err(error) => {
-                    log::error!("failed to save camera frame: {error:#}");
-                    Some("save error")
+                    log::warn!("cannot capture: MicroSD is unavailable: {error:#}");
+                    Some("no sd card")
+                }
+                Ok(()) => match frame
+                    .encode_jpeg()
+                    .and_then(|jpeg| sd_card.save_jpeg(jpeg.bytes()))
+                {
+                    Ok(path) => {
+                        log::info!("saved camera frame to {path}");
+                        Some("saved")
+                    }
+                    Err(error) => {
+                        log::error!("failed to save camera frame: {error:#}");
+                        Some("save error")
+                    }
                 }
             }
         } else if let Some(button) = button {
