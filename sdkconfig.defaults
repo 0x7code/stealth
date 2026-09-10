@@ -10,3 +10,11 @@ CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=4096
 # that allocate large stack variables; or better yet - use 
 # `std::thread::Builder::new().stack_size(XXX)` for spawning
 CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=4096
+
+# The OV2710 uses the P4 MIPI-CSI interface. Its two driver-owned capture
+# buffers live in the P4X-EYE's external PSRAM, not in the 16 MiB flash.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_SPEED_200M=y
+CONFIG_CAMERA_XCLK_USE_ESP_CLOCK_ROUTER=y
+CONFIG_CAMERA_OV2710=y
+CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER=y

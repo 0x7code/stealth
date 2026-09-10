@@ -1,3 +1,6 @@
 [toolchain]
-channel = "nightly"
+# `build-std` is required for ESP-IDF targets. Pin a known-good nightly rather
+# than inheriting a future nightly whose host standard library may be broken.
+# Use `cargo run`: `cargo +esp` overrides this pin and is not compatible here.
+channel = "nightly-2025-06-23"
 components = ["rust-src"]
