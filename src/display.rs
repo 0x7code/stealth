@@ -1,6 +1,7 @@
 use embedded_graphics::{
+    image::GetPixel,
     mono_font::{ascii::FONT_10X20, MonoTextStyle},
-    pixelcolor::{raw::RawU16, Rgb565},
+    pixelcolor::{raw::RawU16, BinaryColor, Rgb565},
     prelude::*,
     primitives::Rectangle,
     text::{Alignment, Baseline, Text, TextStyleBuilder},
@@ -165,28 +166,6 @@ impl Display {
         Ok(())
     }
 
-    /// Draw a short-lived confirmation over the bottom of the current image.
-    ///
-    /// The caller redraws this after each camera frame while the confirmation is active.
-    pub fn show_confirmation(&mut self, message: &str) -> anyhow::Result<()> {
-        let area = Rectangle::new(
-            Point::new(0, i32::from(LCD_HEIGHT) - CONFIRMATION_HEIGHT as i32),
-            Size::new(u32::from(LCD_WIDTH), CONFIRMATION_HEIGHT),
-        );
-        self.fill_rectangle(area, Rgb565::BLACK)?;
-        self.draw(&Text::with_text_style(
-            message,
-            Point::new(i32::from(LCD_WIDTH) / 2, i32::from(LCD_HEIGHT) - 20),
-            MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE),
-            TextStyleBuilder::new()
-                .alignment(Alignment::Center)
-                .baseline(Baseline::Middle)
-                .build(),
-        ))?;
-
-        Ok(())
-    }
-
     /// Scale a packed, little-endian RGB565 camera frame to fill the LCD.
     ///
     /// The camera keeps ownership of `pixels`; this method streams each sampled pixel straight
@@ -197,6 +176,8 @@ impl Display {
         source_width: u32,
         source_height: u32,
         source_stride: u32,
+        zoom: u8,
+        confirmation: Option<&str>,
     ) -> anyhow::Result<()> {
         let required_bytes = usize::try_from(source_stride)
             .ok()
@@ -214,6 +195,7 @@ impl Display {
             || source_height == 0
             || source_stride < minimum_stride
             || pixels.len() < required_bytes
+            || !(1..=3).contains(&zoom)
         {
             anyhow::bail!("camera returned an invalid RGB565 frame");
         }
@@ -227,12 +209,21 @@ impl Display {
         // stretched faces and objects. Mipidsi batches this iterator into its 512-byte SPI
         // transfer buffer, so this remains one LCD window rather than 57,600 independent pixel
         // transactions.
-        let crop_size = source_width.min(source_height);
+        let crop_size = source_width.min(source_height) / u32::from(zoom);
         let crop_x = (source_width - crop_size) / 2;
         let crop_y = (source_height - crop_size) / 2;
         let scaled_pixels = (0..lcd_height * lcd_width).map(|display_pixel| {
             let x = display_pixel % lcd_width;
             let y = display_pixel / lcd_width;
+            if let Some(message) = confirmation {
+                if y >= lcd_height - CONFIRMATION_HEIGHT {
+                    return if is_confirmation_text_pixel(x, y, message) {
+                        Rgb565::WHITE
+                    } else {
+                        Rgb565::BLACK
+                    };
+                }
+            }
             let source_x = crop_x + x * crop_size / lcd_width;
             let source_y = crop_y + y * crop_size / lcd_height;
             let byte_offset = usize::try_from(source_y).expect("source coordinate fits usize")
@@ -286,4 +277,37 @@ impl Display {
 
         self.show_message("ready")
     }
+}
+
+/// Return whether a pixel belongs to the centered FONT_10X20 confirmation text.
+///
+/// This samples the same font atlas used by `show_message`, allowing the bar and its text to be
+/// part of the camera frame's single LCD transfer instead of separate flickering transactions.
+fn is_confirmation_text_pixel(x: u32, y: u32, message: &str) -> bool {
+    let glyph_width = FONT_10X20.character_size.width;
+    let glyph_height = FONT_10X20.character_size.height;
+    let message_width = u32::try_from(message.len())
+        .ok()
+        .and_then(|length| length.checked_mul(glyph_width))
+        .unwrap_or(u32::MAX);
+    let left = (u32::from(LCD_WIDTH).saturating_sub(message_width)) / 2;
+    let top = u32::from(LCD_HEIGHT) - CONFIRMATION_HEIGHT
+        + (CONFIRMATION_HEIGHT.saturating_sub(glyph_height)) / 2;
+    if x < left || x >= left + message_width || y < top || y >= top + glyph_height {
+        return false;
+    }
+
+    let character_index = usize::try_from((x - left) / glyph_width).expect("LCD fits usize");
+    let Some(character) = message.as_bytes().get(character_index) else {
+        return false;
+    };
+    let glyph_index = FONT_10X20.glyph_mapping.index(char::from(*character)) as u32;
+    let glyphs_per_row = FONT_10X20.image.size().width / glyph_width;
+    let glyph_x = (glyph_index % glyphs_per_row) * glyph_width + (x - left) % glyph_width;
+    let glyph_y = (glyph_index / glyphs_per_row) * glyph_height + (y - top);
+
+    FONT_10X20
+        .image
+        .pixel(Point::new(glyph_x as i32, glyph_y as i32))
+        == Some(BinaryColor::On)
 }

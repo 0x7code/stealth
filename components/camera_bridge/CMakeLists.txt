@@ -1,5 +1,5 @@
 idf_component_register(
     SRCS "camera_bridge.c"
     INCLUDE_DIRS "include"
-    REQUIRES esp_video esp_cam_sensor
+    REQUIRES esp_video esp_cam_sensor esp_driver_jpeg
 )

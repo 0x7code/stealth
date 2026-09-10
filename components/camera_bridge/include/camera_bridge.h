@@ -29,9 +29,17 @@ typedef struct {
     size_t length;
 } camera_bridge_frame_t;
 
+/** A JPEG bitstream allocated by the bridge. Release it with release_jpeg. */
+typedef struct {
+    const uint8_t *data;
+    size_t length;
+} camera_bridge_jpeg_t;
+
 esp_err_t camera_bridge_start(const camera_bridge_config_t *config);
 esp_err_t camera_bridge_next_frame(camera_bridge_frame_t *frame);
 esp_err_t camera_bridge_release_frame(void);
+esp_err_t camera_bridge_encode_jpeg(const camera_bridge_frame_t *frame, camera_bridge_jpeg_t *jpeg);
+void camera_bridge_release_jpeg(camera_bridge_jpeg_t *jpeg);
 esp_err_t camera_bridge_stop(void);
 
 #ifdef __cplusplus

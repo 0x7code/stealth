@@ -4,8 +4,8 @@
 //! so normal Rust file APIs work after [`SdCard::mount`] succeeds.
 
 use std::{
-    fs::{self, OpenOptions},
-    io::Write,
+    fs::{self, File, OpenOptions},
+    io::{ErrorKind, Write},
 };
 
 use anyhow::Context;
@@ -18,6 +18,10 @@ use esp_idf_svc::sys;
 
 const MOUNT_PATH: &[u8] = b"/sdcard\0";
 const LOG_PATH: &str = "/sdcard/stealth.log";
+// ESP-IDF's default FAT configuration on this board uses 8.3 filenames. `IMG00000.JPG` keeps
+// both the base name and extension within that limit.
+const CAPTURE_PATH_PREFIX: &str = "/sdcard/IMG";
+const MAX_CAPTURE_FILES: u32 = 100_000;
 
 // The P4X-EYE connects its MicroSD socket to SDMMC slot 0's native pins.
 const SDMMC_CLK: i32 = 43;
@@ -54,23 +58,25 @@ pub struct SdCardHardware {
     pub(crate) card_enable_pin: Gpio46<'static>,
 }
 
-/// A mounted FAT filesystem on the P4X-EYE's MicroSD card.
+/// The P4X-EYE MicroSD controller.
 ///
-/// The private fields intentionally retain exclusive ownership of the SDMMC host,
-/// LDO4, and card-enable GPIO for as long as the filesystem is mounted.
+/// It owns the hardware whether or not a card is currently mounted, so a card inserted after
+/// boot can be mounted later without restarting the camera.
 pub struct SdCard {
-    card: *mut sys::sdmmc_card_t,
-    power: sys::sd_pwr_ctrl_handle_t,
+    mounted: Option<MountedCard>,
     _host: SDMMC0<'static>,
     _ldo4: LDO4<'static, Adjustable>,
     _card_enable: PinDriver<'static, Output>,
 }
 
+struct MountedCard {
+    card: *mut sys::sdmmc_card_t,
+    power: sys::sd_pwr_ctrl_handle_t,
+}
+
 impl SdCard {
-    /// Enable the card, power its I/O at 3.3 V, and mount its FAT filesystem at `/sdcard`.
-    ///
-    /// Mounting never formats the card. Format it as FAT32 on a computer if mounting fails.
-    pub fn mount(hardware: SdCardHardware) -> anyhow::Result<Self> {
+    /// Configure the card power and retain the SDMMC resources for future mount attempts.
+    pub fn new(hardware: SdCardHardware) -> anyhow::Result<Self> {
         let SdCardHardware {
             host,
             ldo4,
@@ -81,7 +87,23 @@ impl SdCard {
         let mut card_enable = PinDriver::output(card_enable_pin)?;
         card_enable.set_low()?;
 
-        // The SDMMC power controller owns LDO4 while the card is mounted.
+        Ok(Self {
+            mounted: None,
+            _host: host,
+            _ldo4: ldo4,
+            _card_enable: card_enable,
+        })
+    }
+
+    /// Mount the card at `/sdcard` if it is present and not already mounted.
+    ///
+    /// Mounting never formats the card. Format it as FAT32 on a computer if mounting fails.
+    pub fn mount(&mut self) -> anyhow::Result<()> {
+        if self.mounted.is_some() {
+            return Ok(());
+        }
+
+        // The mount owns this ESP-IDF power-controller handle until unmount.
         let mut power = std::ptr::null_mut();
         sys::EspError::convert(unsafe {
             sd_pwr_ctrl_new_on_chip_ldo(&SdPowerLdoConfig { ldo_chan_id: 4 }, &mut power)
@@ -116,17 +138,13 @@ impl SdCard {
             return Err(error);
         }
 
-        Ok(Self {
-            card,
-            power,
-            _host: host,
-            _ldo4: ldo4,
-            _card_enable: card_enable,
-        })
+        self.mounted = Some(MountedCard { card, power });
+        Ok(())
     }
 
     /// Append one line to `/sdcard/stealth.log` and immediately flush it to the card.
     pub fn append_log(&self, message: &str) -> anyhow::Result<()> {
+        self.require_mount()?;
         let mut log = OpenOptions::new()
             .create(true)
             .append(true)
@@ -142,19 +160,53 @@ impl SdCard {
 
     /// Read the complete UTF-8 log file. This is mainly useful to verify the first write.
     pub fn read_log(&self) -> anyhow::Result<String> {
+        self.require_mount()?;
         fs::read_to_string(LOG_PATH).context("failed to read /sdcard/stealth.log")
+    }
+
+    /// Save one JPEG bitstream as the first free `/sdcard/IMG00000.JPG` capture.
+    pub fn save_jpeg(&mut self, jpeg: &[u8]) -> anyhow::Result<String> {
+        self.mount().context("MicroSD is unavailable")?;
+        let (path, mut file) = create_capture_file("JPG")?;
+        let write_result = file
+            .write_all(jpeg)
+            .context("failed to write JPEG capture to MicroSD")
+            .and_then(|()| {
+                file.sync_data()
+                    .context("failed to flush JPEG capture to MicroSD")
+            });
+        drop(file);
+
+        if let Err(error) = write_result {
+            // Do not leave a file that looks like a valid capture but contains only a prefix.
+            let _ = fs::remove_file(&path);
+            return Err(error);
+        }
+
+        Ok(path)
+    }
+
+    fn require_mount(&self) -> anyhow::Result<()> {
+        if self.mounted.is_none() {
+            anyhow::bail!("MicroSD is not mounted")
+        }
+        Ok(())
     }
 }
 
 impl Drop for SdCard {
     fn drop(&mut self) {
-        if !self.card.is_null() {
+        let Some(mounted) = self.mounted.take() else {
+            return;
+        };
+        if !mounted.card.is_null() {
             // Drop cannot return an error. Normal operation keeps this object alive until reset.
-            let _ =
-                unsafe { sys::esp_vfs_fat_sdcard_unmount(MOUNT_PATH.as_ptr().cast(), self.card) };
+            let _ = unsafe {
+                sys::esp_vfs_fat_sdcard_unmount(MOUNT_PATH.as_ptr().cast(), mounted.card)
+            };
         }
-        if !self.power.is_null() {
-            let _ = unsafe { sd_pwr_ctrl_del_on_chip_ldo(self.power) };
+        if !mounted.power.is_null() {
+            let _ = unsafe { sd_pwr_ctrl_del_on_chip_ldo(mounted.power) };
         }
     }
 }
@@ -208,4 +260,30 @@ fn sdmmc_slot_config() -> sys::sdmmc_slot_config_t {
         width: 4,
         flags: 0,
     }
+}
+
+fn create_capture_file(extension: &str) -> anyhow::Result<(String, File)> {
+    for index in 0..MAX_CAPTURE_FILES {
+        let path = format!("{CAPTURE_PATH_PREFIX}{index:05}.{extension}");
+        match fs::metadata(&path) {
+            Ok(_) => continue,
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).context("failed to inspect camera capture on MicroSD");
+            }
+        }
+
+        // ESP-IDF's FAT VFS rejects `O_EXCL`, which Rust uses for `create_new`. Capture runs
+        // from this one task, so checking first and then using the widely supported `O_CREAT`
+        // flag is sufficient here.
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .context("failed to create camera capture on MicroSD")?;
+        return Ok((path, file));
+    }
+
+    anyhow::bail!("no free camera-capture filenames remain on MicroSD")
 }
