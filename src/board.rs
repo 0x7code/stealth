@@ -2,7 +2,7 @@
 //!
 //! This is the one place that maps named hardware features to ESP32-P4 peripherals and GPIOs.
 
-use crate::{display::DisplayHardware, sd_card::SdCardHardware};
+use crate::{buttons::ButtonsHardware, display::DisplayHardware, sd_card::SdCardHardware};
 use esp_idf_hal::peripherals::Peripherals;
 
 /// The P4X-EYE hardware resources divided by feature.
@@ -10,6 +10,7 @@ pub struct P4xEye {
     display: DisplayHardware,
     sd_card: SdCardHardware,
     camera: CameraHardware,
+    buttons: ButtonsHardware,
 }
 
 /// P4X-EYE camera wiring consumed by the ESP-Video bridge.
@@ -59,11 +60,23 @@ impl P4xEye {
                 xclk_pin: 11,
                 xclk_hz: 24_000_000,
             },
+            buttons: ButtonsHardware {
+                previous_pin: pins.gpio4,
+                next_pin: pins.gpio5,
+                enter_pin: pins.gpio3,
+            },
         })
     }
 
     /// Split the board resources so each feature can own its hardware for its full lifetime.
-    pub fn into_parts(self) -> (DisplayHardware, SdCardHardware, CameraHardware) {
-        (self.display, self.sd_card, self.camera)
+    pub fn into_parts(
+        self,
+    ) -> (
+        DisplayHardware,
+        SdCardHardware,
+        CameraHardware,
+        ButtonsHardware,
+    ) {
+        (self.display, self.sd_card, self.camera, self.buttons)
     }
 }
