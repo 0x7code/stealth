@@ -20,6 +20,7 @@ use mipidsi::{
 
 const LCD_WIDTH: u16 = 240;
 const LCD_HEIGHT: u16 = 240;
+const CONFIRMATION_HEIGHT: u32 = 40;
 const BOOT_ANIMATION_FRAMES: u32 = 20;
 const BOOT_ANIMATION_DURATION: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -154,6 +155,28 @@ impl Display {
         self.draw(&Text::with_text_style(
             message,
             Point::new(i32::from(LCD_WIDTH) / 2, i32::from(LCD_HEIGHT) / 2),
+            MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE),
+            TextStyleBuilder::new()
+                .alignment(Alignment::Center)
+                .baseline(Baseline::Middle)
+                .build(),
+        ))?;
+
+        Ok(())
+    }
+
+    /// Draw a short-lived confirmation over the bottom of the current image.
+    ///
+    /// The caller redraws this after each camera frame while the confirmation is active.
+    pub fn show_confirmation(&mut self, message: &str) -> anyhow::Result<()> {
+        let area = Rectangle::new(
+            Point::new(0, i32::from(LCD_HEIGHT) - CONFIRMATION_HEIGHT as i32),
+            Size::new(u32::from(LCD_WIDTH), CONFIRMATION_HEIGHT),
+        );
+        self.fill_rectangle(area, Rgb565::BLACK)?;
+        self.draw(&Text::with_text_style(
+            message,
+            Point::new(i32::from(LCD_WIDTH) / 2, i32::from(LCD_HEIGHT) - 20),
             MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE),
             TextStyleBuilder::new()
                 .alignment(Alignment::Center)

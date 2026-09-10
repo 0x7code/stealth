@@ -4,6 +4,8 @@ mod camera;
 mod display;
 mod sd_card;
 
+const BUTTON_CONFIRMATION_DURATION: std::time::Duration = std::time::Duration::from_millis(500);
+
 fn main() {
     // It is necessary to call this function once. Otherwise, some patches to the runtime
     // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
@@ -54,6 +56,7 @@ fn main() {
 
     // Keep all hardware owners in scope. A camera frame borrows a driver-owned DMA buffer
     // only until it has been sent to the LCD, then it is immediately returned to the camera.
+    let mut button_confirmation = None;
     loop {
         let frame = match camera.next_frame() {
             Ok(frame) => frame,
@@ -72,6 +75,16 @@ fn main() {
         }
         if let Some(button) = buttons.pressed() {
             log::info!("button: {}", button.label());
+            button_confirmation = Some((button, std::time::Instant::now()));
+        }
+        if let Some((button, started)) = button_confirmation {
+            if started.elapsed() < BUTTON_CONFIRMATION_DURATION {
+                display
+                    .show_confirmation(button.label())
+                    .expect("failed to show button confirmation");
+            } else {
+                button_confirmation = None;
+            }
         }
     }
 }
