@@ -16,6 +16,11 @@ pub struct CameraFrame<'camera> {
     _camera: &'camera mut Camera,
 }
 
+/// A hardware-encoded JPEG owned by the camera bridge.
+pub struct EncodedJpeg {
+    raw: sys::camera_bridge_jpeg_t,
+}
+
 impl Camera {
     /// Start the P4X-EYE's OV2710 MIPI-CSI camera in RGB565 mode.
     pub fn start(hardware: CameraHardware) -> anyhow::Result<Self> {
@@ -65,6 +70,28 @@ impl CameraFrame<'_> {
 
     pub fn stride(&self) -> u32 {
         self.raw.bytes_per_line
+    }
+
+    /// Compress this RGB565 frame with the ESP32-P4 JPEG hardware encoder.
+    pub fn encode_jpeg(&self) -> anyhow::Result<EncodedJpeg> {
+        let mut raw = sys::camera_bridge_jpeg_t::default();
+        sys::EspError::convert(unsafe { sys::camera_bridge_encode_jpeg(&self.raw, &mut raw) })
+            .context("failed to encode camera frame as JPEG")?;
+
+        Ok(EncodedJpeg { raw })
+    }
+}
+
+impl EncodedJpeg {
+    pub fn bytes(&self) -> &[u8] {
+        // The C bridge allocates and validates this buffer, which remains valid until Drop.
+        unsafe { std::slice::from_raw_parts(self.raw.data.cast(), self.raw.length) }
+    }
+}
+
+impl Drop for EncodedJpeg {
+    fn drop(&mut self) {
+        unsafe { sys::camera_bridge_release_jpeg(&mut self.raw) };
     }
 }
 

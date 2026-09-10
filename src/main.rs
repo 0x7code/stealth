@@ -2,9 +2,12 @@ mod board;
 mod buttons;
 mod camera;
 mod display;
+mod rotary;
 mod sd_card;
 
 const BUTTON_CONFIRMATION_DURATION: std::time::Duration = std::time::Duration::from_millis(500);
+const MIN_ZOOM: u8 = 1;
+const MAX_ZOOM: u8 = 3;
 
 fn main() {
     // It is necessary to call this function once. Otherwise, some patches to the runtime
@@ -14,7 +17,7 @@ fn main() {
     // Bind the log crate to the ESP Logging facilities
     esp_idf_svc::log::EspLogger::initialize_default();
 
-    let (display_hardware, sd_card_hardware, camera_hardware, buttons_hardware) =
+    let (display_hardware, sd_card_hardware, camera_hardware, buttons_hardware, rotary_hardware) =
         board::P4xEye::take()
             .expect("failed to acquire P4X-EYE peripherals")
             .into_parts();
@@ -22,28 +25,31 @@ fn main() {
     log::info!("starting P4X-EYE display");
     let mut buttons =
         buttons::Buttons::new(buttons_hardware).expect("button initialization failed");
+    let rotary =
+        rotary::RotaryEvents::start(rotary_hardware).expect("rotary encoder initialization failed");
     let mut display =
         display::Display::init(display_hardware).expect("display initialization failed");
     display
         .run_boot_animation()
         .expect("display boot animation failed");
 
-    let _sd_card = match sd_card::SdCard::mount(sd_card_hardware) {
-        Ok(card) => {
-            card.append_log("stealth boot complete")
+    let mut sd_card =
+        sd_card::SdCard::new(sd_card_hardware).expect("failed to initialize MicroSD controller");
+    match sd_card.mount() {
+        Ok(()) => {
+            sd_card
+                .append_log("stealth boot complete")
                 .expect("failed to write SD card log");
-            let log_bytes = card
+            let log_bytes = sd_card
                 .read_log()
                 .expect("failed to read SD card log back")
                 .len();
             log::info!("MicroSD mounted; wrote and read /sdcard/stealth.log ({log_bytes} bytes)");
-            Some(card)
         }
         Err(error) => {
-            log::warn!("MicroSD unavailable: {error:#}");
-            None
+            log::warn!("MicroSD unavailable at boot; insert one and press capture: {error:#}");
         }
-    };
+    }
 
     display
         .show_message("starting camera")
@@ -57,35 +63,83 @@ fn main() {
     // Keep all hardware owners in scope. A camera frame borrows a driver-owned DMA buffer
     // only until it has been sent to the LCD, then it is immediately returned to the camera.
     let mut button_confirmation = None;
+    let mut zoom = MIN_ZOOM;
     loop {
         let frame = match camera.next_frame() {
             Ok(frame) => frame,
             Err(error) => show_error_forever(&mut display, &mut buttons, "capture error", error),
+        };
+        let button = buttons.pressed();
+        let rotary_event = rotary.poll();
+        let capture_requested = matches!(button, Some(buttons::Button::Enter))
+            || matches!(rotary_event, Some(rotary::RotaryEvent::Pressed));
+        let button_message = if capture_requested {
+            match frame
+                .encode_jpeg()
+                .and_then(|jpeg| sd_card.save_jpeg(jpeg.bytes()))
+            {
+                Ok(path) => {
+                    log::info!("saved camera frame to {path}");
+                    Some("saved")
+                }
+                Err(error) => {
+                    log::error!("failed to save camera frame: {error:#}");
+                    Some("save error")
+                }
+            }
+        } else if let Some(button) = button {
+            {
+                log::info!("button: {}", button.label());
+                Some(button.label())
+            }
+        } else {
+            match rotary_event {
+                Some(rotary::RotaryEvent::Clockwise) => {
+                    zoom = (zoom + 1).min(MAX_ZOOM);
+                    Some(zoom_label(zoom))
+                }
+                Some(rotary::RotaryEvent::CounterClockwise) => {
+                    zoom = zoom.saturating_sub(1).max(MIN_ZOOM);
+                    Some(zoom_label(zoom))
+                }
+                Some(rotary::RotaryEvent::Pressed) | None => None,
+            }
+        };
+        if let Some(message) = button_message {
+            button_confirmation = Some((message, std::time::Instant::now()));
+        }
+        let confirmation = match button_confirmation {
+            Some((message, started)) if started.elapsed() < BUTTON_CONFIRMATION_DURATION => {
+                Some(message)
+            }
+            Some(_) => {
+                button_confirmation = None;
+                None
+            }
+            None => None,
         };
         let draw_result = display.draw_rgb565_scaled(
             frame.bytes(),
             frame.width(),
             frame.height(),
             frame.stride(),
+            zoom,
+            confirmation,
         );
         // Return the DMA buffer before handling an error that may keep this task alive forever.
         drop(frame);
         if let Err(error) = draw_result {
             show_error_forever(&mut display, &mut buttons, "frame error", error);
         }
-        if let Some(button) = buttons.pressed() {
-            log::info!("button: {}", button.label());
-            button_confirmation = Some((button, std::time::Instant::now()));
-        }
-        if let Some((button, started)) = button_confirmation {
-            if started.elapsed() < BUTTON_CONFIRMATION_DURATION {
-                display
-                    .show_confirmation(button.label())
-                    .expect("failed to show button confirmation");
-            } else {
-                button_confirmation = None;
-            }
-        }
+    }
+}
+
+fn zoom_label(zoom: u8) -> &'static str {
+    match zoom {
+        1 => "zoom 1x",
+        2 => "zoom 2x",
+        3 => "zoom 3x",
+        _ => unreachable!("zoom is clamped to its supported range"),
     }
 }
 

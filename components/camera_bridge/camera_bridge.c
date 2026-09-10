@@ -4,6 +4,7 @@
 #include <inttypes.h>
 #include <limits.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -13,10 +14,12 @@
 #include "esp_log.h"
 #include "esp_video_device.h"
 #include "esp_video_init.h"
+#include "driver/jpeg_encode.h"
 #include "linux/videodev2.h"
 
 #define CAMERA_BUFFER_COUNT 2
 static const char *TAG = "camera_bridge";
+static jpeg_encoder_handle_t jpeg_encoder;
 
 typedef struct {
     uint8_t *data;
@@ -44,6 +47,26 @@ static void stop_xclk(void)
         esp_cam_sensor_xclk_free(camera.xclk);
         camera.xclk = NULL;
     }
+}
+
+static void stop_jpeg_encoder(void)
+{
+    if (jpeg_encoder != NULL) {
+        jpeg_del_encoder_engine(jpeg_encoder);
+        jpeg_encoder = NULL;
+    }
+}
+
+static esp_err_t start_jpeg_encoder(void)
+{
+    if (jpeg_encoder != NULL) {
+        return ESP_OK;
+    }
+
+    const jpeg_encode_engine_cfg_t config = {
+        .timeout_ms = 500,
+    };
+    return jpeg_new_encoder_engine(&config, &jpeg_encoder);
 }
 
 static void close_capture(void)
@@ -300,9 +323,71 @@ esp_err_t camera_bridge_release_frame(void)
     return ESP_OK;
 }
 
+esp_err_t camera_bridge_encode_jpeg(const camera_bridge_frame_t *frame, camera_bridge_jpeg_t *jpeg)
+{
+    if (frame == NULL || jpeg == NULL || frame->data == NULL || frame->width == 0 ||
+        frame->height == 0 || frame->width > UINT32_MAX / 2 ||
+        frame->bytes_per_line != frame->width * 2) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const uint32_t row_bytes = frame->width * 2;
+    if (frame->height > UINT32_MAX / row_bytes) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    const uint32_t input_size = row_bytes * frame->height;
+    if (frame->length < input_size) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    esp_err_t err = start_jpeg_encoder();
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    const jpeg_encode_memory_alloc_cfg_t allocation = {
+        .buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER,
+    };
+    size_t output_capacity = 0;
+    uint8_t *output = jpeg_alloc_encoder_mem(input_size, &allocation, &output_capacity);
+    if (output == NULL || output_capacity > UINT32_MAX) {
+        free(output);
+        return ESP_ERR_NO_MEM;
+    }
+
+    const jpeg_encode_cfg_t config = {
+        .width = frame->width,
+        .height = frame->height,
+        .src_type = JPEG_ENCODE_IN_FORMAT_RGB565,
+        .sub_sample = JPEG_DOWN_SAMPLING_YUV420,
+        .image_quality = 85,
+    };
+    uint32_t output_size = 0;
+    err = jpeg_encoder_process(jpeg_encoder, &config, frame->data, input_size, output,
+                               output_capacity, &output_size);
+    if (err != ESP_OK) {
+        free(output);
+        return err;
+    }
+
+    jpeg->data = output;
+    jpeg->length = output_size;
+    return ESP_OK;
+}
+
+void camera_bridge_release_jpeg(camera_bridge_jpeg_t *jpeg)
+{
+    if (jpeg != NULL) {
+        free((void *)jpeg->data);
+        jpeg->data = NULL;
+        jpeg->length = 0;
+    }
+}
+
 esp_err_t camera_bridge_stop(void)
 {
     close_capture();
+    stop_jpeg_encoder();
     esp_err_t err = deinitialize_video();
     stop_xclk();
     return err;
