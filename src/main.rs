@@ -6,6 +6,7 @@ mod rotary;
 mod sd_card;
 
 const BUTTON_CONFIRMATION_DURATION: std::time::Duration = std::time::Duration::from_millis(500);
+const FOCUS_ASSIST_DURATION: std::time::Duration = std::time::Duration::from_secs(3);
 const MIN_ZOOM: u8 = 1;
 const MAX_ZOOM: u8 = 3;
 
@@ -64,6 +65,7 @@ fn main() {
     // only until it has been sent to the LCD, then it is immediately returned to the camera.
     let mut button_confirmation = None;
     let mut zoom = MIN_ZOOM;
+    let mut focus_assist_until = None;
     loop {
         let frame = match camera.next_frame() {
             Ok(frame) => frame,
@@ -102,10 +104,14 @@ fn main() {
             match rotary_event {
                 Some(rotary::RotaryEvent::Clockwise) => {
                     zoom = (zoom + 1).min(MAX_ZOOM);
+                    focus_assist_until = (zoom > MIN_ZOOM)
+                        .then(|| std::time::Instant::now() + FOCUS_ASSIST_DURATION);
                     Some(zoom_label(zoom))
                 }
                 Some(rotary::RotaryEvent::CounterClockwise) => {
                     zoom = zoom.saturating_sub(1).max(MIN_ZOOM);
+                    focus_assist_until = (zoom > MIN_ZOOM)
+                        .then(|| std::time::Instant::now() + FOCUS_ASSIST_DURATION);
                     Some(zoom_label(zoom))
                 }
                 Some(rotary::RotaryEvent::Pressed) | None => None,
@@ -124,12 +130,21 @@ fn main() {
             }
             None => None,
         };
+        let active_zoom = match focus_assist_until {
+            Some(until) if std::time::Instant::now() < until => zoom,
+            Some(_) => {
+                zoom = MIN_ZOOM;
+                focus_assist_until = None;
+                MIN_ZOOM
+            }
+            None => MIN_ZOOM,
+        };
         let draw_result = display.draw_rgb565_scaled(
             frame.bytes(),
             frame.width(),
             frame.height(),
             frame.stride(),
-            zoom,
+            active_zoom,
             confirmation,
         );
         // Return the DMA buffer before handling an error that may keep this task alive forever.
@@ -142,9 +157,9 @@ fn main() {
 
 fn zoom_label(zoom: u8) -> &'static str {
     match zoom {
-        1 => "zoom 1x",
-        2 => "zoom 2x",
-        3 => "zoom 3x",
+        1 => "focus 1x",
+        2 => "focus 2x",
+        3 => "focus 3x",
         _ => unreachable!("zoom is clamped to its supported range"),
     }
 }
