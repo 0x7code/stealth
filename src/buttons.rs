@@ -1,4 +1,13 @@
-use esp_idf_hal::gpio::{Input, InputPin, PinDriver, Pull};
+use esp_idf_hal::gpio::{Gpio3, Gpio4, Gpio5, Input, PinDriver, Pull};
+
+/// P4X-EYE GPIOs used by the rear navigation buttons.
+///
+/// `board::P4xEye` creates this so it remains the sole owner of `Peripherals`.
+pub struct ButtonsHardware {
+    pub(crate) previous_pin: Gpio4<'static>,
+    pub(crate) next_pin: Gpio5<'static>,
+    pub(crate) enter_pin: Gpio3<'static>,
+}
 
 /// The three navigation buttons on the rear of the P4X-EYE.
 #[derive(Clone, Copy, Debug)]
@@ -42,16 +51,12 @@ impl Buttons {
     /// Configure the P4X-EYE's rear navigation buttons.
     ///
     /// The board maps previous, next, and enter to GPIO4, GPIO5, and GPIO3 respectively.
-    pub fn new(
-        previous: impl InputPin + 'static,
-        next: impl InputPin + 'static,
-        enter: impl InputPin + 'static,
-    ) -> anyhow::Result<Self> {
+    pub fn new(hardware: ButtonsHardware) -> anyhow::Result<Self> {
         Ok(Self {
             pins: [
-                PinDriver::input(previous, Pull::Up)?,
-                PinDriver::input(next, Pull::Up)?,
-                PinDriver::input(enter, Pull::Up)?,
+                PinDriver::input(hardware.previous_pin, Pull::Up)?,
+                PinDriver::input(hardware.next_pin, Pull::Up)?,
+                PinDriver::input(hardware.enter_pin, Pull::Up)?,
             ],
             pressed: [false; 3],
             released_samples: [0; 3],
