@@ -33,3 +33,12 @@ embassy-time = { version = "0.5", features = ["generic-queue-8"] }
 
 [build-dependencies]
 embuild = "0.33"
+
+# ESP-Video provides the P4 MIPI-CSI/OV2710 driver used by `camera_bridge`.
+# The 0.9 series is the version used by Espressif's P4X-EYE ESP-IDF 5.5 demo.
+[[package.metadata.esp-idf-sys.extra_components]]
+component_dirs = ["components"]
+bindings_header = "components/camera_bridge/include/camera_bridge.h"
+
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "esp_video", version = "0.9.*" }

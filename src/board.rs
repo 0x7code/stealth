@@ -9,6 +9,21 @@ use esp_idf_hal::peripherals::Peripherals;
 pub struct P4xEye {
     display: DisplayHardware,
     sd_card: SdCardHardware,
+    camera: CameraHardware,
+}
+
+/// P4X-EYE camera wiring consumed by the ESP-Video bridge.
+///
+/// These are numeric settings rather than `PinDriver`s because ESP-Video configures the MIPI
+/// controller, SCCB bus, XCLK generator, reset, and shared camera-enable line itself.
+pub struct CameraHardware {
+    pub(crate) sccb_i2c_port: i32,
+    pub(crate) sccb_clock_pin: i32,
+    pub(crate) sccb_data_pin: i32,
+    pub(crate) camera_enable_pin: i32,
+    pub(crate) reset_pin: i32,
+    pub(crate) xclk_pin: i32,
+    pub(crate) xclk_hz: u32,
 }
 
 impl P4xEye {
@@ -33,11 +48,22 @@ impl P4xEye {
                 ldo4: peripherals.ldo4,
                 card_enable_pin: pins.gpio46,
             },
+            camera: CameraHardware {
+                sccb_i2c_port: 0,
+                sccb_clock_pin: 13,
+                sccb_data_pin: 14,
+                // GPIO12 is the board's camera-enable line. The display initializes it high
+                // before this driver briefly pulses it as part of camera power-on.
+                camera_enable_pin: 12,
+                reset_pin: 26,
+                xclk_pin: 11,
+                xclk_hz: 24_000_000,
+            },
         })
     }
 
     /// Split the board resources so each feature can own its hardware for its full lifetime.
-    pub fn into_parts(self) -> (DisplayHardware, SdCardHardware) {
-        (self.display, self.sd_card)
+    pub fn into_parts(self) -> (DisplayHardware, SdCardHardware, CameraHardware) {
+        (self.display, self.sd_card, self.camera)
     }
 }
