@@ -4,6 +4,7 @@ mod buttons;
 mod camera;
 mod display;
 mod live_view;
+mod memory;
 mod rotary;
 mod sd_card;
 

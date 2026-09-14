@@ -492,6 +492,12 @@ void camera_bridge_release_image(camera_bridge_image_t *image)
     }
 }
 
+esp_err_t camera_bridge_release_jpeg_decoder(void)
+{
+    stop_jpeg_decoder();
+    return ESP_OK;
+}
+
 esp_err_t camera_bridge_stop(void)
 {
     close_capture();

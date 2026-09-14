@@ -106,6 +106,14 @@ pub fn decode_jpeg(jpeg: &[u8]) -> anyhow::Result<DecodedJpeg> {
     Ok(DecodedJpeg { raw })
 }
 
+/// Release the Gallery-only hardware decoder and its driver allocations.
+///
+/// This does not stop the camera stream or affect the hardware JPEG encoder used for captures.
+pub fn release_gallery_decoder() -> anyhow::Result<()> {
+    sys::EspError::convert(unsafe { sys::camera_bridge_release_jpeg_decoder() })
+        .context("failed to release Gallery JPEG decoder")
+}
+
 impl DecodedJpeg {
     pub fn rgb888_bytes(&self) -> &[u8] {
         // The bridge allocates and validates this buffer, which remains valid until Drop.

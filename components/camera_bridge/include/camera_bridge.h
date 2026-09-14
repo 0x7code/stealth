@@ -52,6 +52,7 @@ void camera_bridge_release_jpeg(camera_bridge_jpeg_t *jpeg);
 esp_err_t camera_bridge_decode_jpeg(const uint8_t *jpeg, size_t jpeg_length,
                                     camera_bridge_image_t *image);
 void camera_bridge_release_image(camera_bridge_image_t *image);
+esp_err_t camera_bridge_release_jpeg_decoder(void);
 esp_err_t camera_bridge_stop(void);
 
 #ifdef __cplusplus

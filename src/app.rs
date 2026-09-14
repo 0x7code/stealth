@@ -7,7 +7,7 @@ use crate::{
     camera::{self, CameraFrame},
     display,
     live_view::{ControlEvent, LiveView, LiveViewAction},
-    rotary, sd_card,
+    memory, rotary, sd_card,
 };
 use esp_idf_hal::delay::FreeRtos;
 
@@ -74,6 +74,7 @@ impl App {
             Err(error) => show_error_forever(&mut display, &mut buttons, "camera error", error),
         };
         log::info!("camera streaming to the LCD");
+        memory::log_free("Photo ready");
 
         Ok(Self {
             display,
@@ -120,7 +121,13 @@ impl App {
             };
 
             match next_mode {
-                Ok(Some(next_mode)) => *mode = next_mode,
+                Ok(Some(next_mode)) => {
+                    let leaving_gallery = matches!(mode, Mode::Gallery(_));
+                    *mode = next_mode;
+                    if leaving_gallery {
+                        memory::log_free("Gallery exited");
+                    }
+                }
                 Ok(None) => {}
                 Err(error) => show_error_forever(display, buttons, "screen error", error),
             }
@@ -257,6 +264,7 @@ fn run_gallery(
     // The encoder press is the Gallery back action, except while a deletion is awaiting an
     // explicit confirmation. This leaves Enter as the dedicated delete/confirm control.
     if matches!(input, InputEvent::RotaryPressed) && !gallery.delete_pending {
+        camera::release_gallery_decoder()?;
         display.show_mode_menu(true)?;
         return Ok(Some(Mode::Menu(Menu::gallery())));
     }
@@ -305,8 +313,11 @@ fn render_gallery(
         return display.show_message("gallery empty");
     };
 
+    memory::log_free("Gallery before JPEG decode");
     let jpeg = sd_card.read_capture(capture)?;
     let image = camera::decode_jpeg(&jpeg)?;
+    drop(jpeg);
+    memory::log_free("Gallery JPEG decoded");
     let caption;
     let label = if gallery.delete_pending {
         "delete? enter=yes"
@@ -314,13 +325,16 @@ fn render_gallery(
         caption = format!("{} del=enter", capture.name());
         &caption
     };
-    display.draw_rgb888_scaled(
+    let draw_result = display.draw_rgb888_scaled(
         image.rgb888_bytes(),
         image.width(),
         image.height(),
         image.stride(),
         Some(label),
-    )
+    );
+    drop(image);
+    memory::log_free("Gallery JPEG released");
+    draw_result
 }
 
 fn initialize_sd_card(sd_card: &mut sd_card::SdCard) {
