@@ -14,12 +14,14 @@
 #include "esp_log.h"
 #include "esp_video_device.h"
 #include "esp_video_init.h"
+#include "driver/jpeg_decode.h"
 #include "driver/jpeg_encode.h"
 #include "linux/videodev2.h"
 
 #define CAMERA_BUFFER_COUNT 2
 static const char *TAG = "camera_bridge";
 static jpeg_encoder_handle_t jpeg_encoder;
+static jpeg_decoder_handle_t jpeg_decoder;
 
 typedef struct {
     uint8_t *data;
@@ -57,16 +59,39 @@ static void stop_jpeg_encoder(void)
     }
 }
 
+static void stop_jpeg_decoder(void)
+{
+    if (jpeg_decoder != NULL) {
+        jpeg_del_decoder_engine(jpeg_decoder);
+        jpeg_decoder = NULL;
+    }
+}
+
 static esp_err_t start_jpeg_encoder(void)
 {
     if (jpeg_encoder != NULL) {
         return ESP_OK;
     }
 
+    // The P4 JPEG engine switches between encoding camera frames and decoding Gallery images.
+    stop_jpeg_decoder();
     const jpeg_encode_engine_cfg_t config = {
         .timeout_ms = 500,
     };
     return jpeg_new_encoder_engine(&config, &jpeg_encoder);
+}
+
+static esp_err_t start_jpeg_decoder(void)
+{
+    if (jpeg_decoder != NULL) {
+        return ESP_OK;
+    }
+
+    stop_jpeg_encoder();
+    const jpeg_decode_engine_cfg_t config = {
+        .timeout_ms = 500,
+    };
+    return jpeg_new_decoder_engine(&config, &jpeg_decoder);
 }
 
 static void close_capture(void)
@@ -384,10 +409,94 @@ void camera_bridge_release_jpeg(camera_bridge_jpeg_t *jpeg)
     }
 }
 
+esp_err_t camera_bridge_decode_jpeg(const uint8_t *jpeg, size_t jpeg_length,
+                                    camera_bridge_image_t *image)
+{
+    if (jpeg == NULL || image == NULL || jpeg_length == 0 || jpeg_length > UINT32_MAX) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(image, 0, sizeof(*image));
+
+    jpeg_decode_picture_info_t picture;
+    esp_err_t err = jpeg_decoder_get_info(jpeg, jpeg_length, &picture);
+    if (err != ESP_OK || picture.width == 0 || picture.height == 0 ||
+        picture.width > UINT32_MAX / 3) {
+        return err == ESP_OK ? ESP_ERR_INVALID_SIZE : err;
+    }
+
+    const uint32_t row_bytes = picture.width * 3;
+    const uint32_t aligned_width = (picture.width + 15) & ~15U;
+    const uint32_t aligned_height = (picture.height + 15) & ~15U;
+    if (aligned_width < picture.width || aligned_height < picture.height ||
+        aligned_width > UINT32_MAX / aligned_height ||
+        aligned_width * aligned_height > UINT32_MAX / 3) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    const jpeg_decode_memory_alloc_cfg_t input_allocation = {
+        .buffer_direction = JPEG_DEC_ALLOC_INPUT_BUFFER,
+    };
+    size_t input_capacity = 0;
+    uint8_t *input = jpeg_alloc_decoder_mem(jpeg_length, &input_allocation, &input_capacity);
+    if (input == NULL || input_capacity < jpeg_length) {
+        free(input);
+        return ESP_ERR_NO_MEM;
+    }
+    memcpy(input, jpeg, jpeg_length);
+
+    const jpeg_decode_memory_alloc_cfg_t output_allocation = {
+        .buffer_direction = JPEG_DEC_ALLOC_OUTPUT_BUFFER,
+    };
+    const size_t requested_output_size = (size_t)aligned_width * aligned_height * 3;
+    size_t output_capacity = 0;
+    uint8_t *output = jpeg_alloc_decoder_mem(requested_output_size, &output_allocation,
+                                             &output_capacity);
+    if (output == NULL || output_capacity > UINT32_MAX) {
+        free(input);
+        free(output);
+        return ESP_ERR_NO_MEM;
+    }
+
+    err = start_jpeg_decoder();
+    uint32_t output_size = 0;
+    if (err == ESP_OK) {
+        const jpeg_decode_cfg_t config = {
+            .output_format = JPEG_DECODE_OUT_FORMAT_RGB888,
+            .rgb_order = JPEG_DEC_RGB_ELEMENT_ORDER_RGB,
+            .conv_std = JPEG_YUV_RGB_CONV_STD_BT601,
+        };
+        err = jpeg_decoder_process(jpeg_decoder, &config, input, jpeg_length, output,
+                                   output_capacity, &output_size);
+    }
+    free(input);
+    if (err != ESP_OK) {
+        free(output);
+        return err;
+    }
+
+    // JPEG YUV420 output may be padded to a 16-pixel boundary. Only the original rectangle is
+    // exposed to Rust, while the complete allocation remains valid until release_image.
+    image->data = output;
+    image->width = picture.width;
+    image->height = picture.height;
+    image->bytes_per_line = row_bytes;
+    image->length = output_size;
+    return ESP_OK;
+}
+
+void camera_bridge_release_image(camera_bridge_image_t *image)
+{
+    if (image != NULL) {
+        free((void *)image->data);
+        memset(image, 0, sizeof(*image));
+    }
+}
+
 esp_err_t camera_bridge_stop(void)
 {
     close_capture();
     stop_jpeg_encoder();
+    stop_jpeg_decoder();
     esp_err_t err = deinitialize_video();
     stop_xclk();
     return err;
