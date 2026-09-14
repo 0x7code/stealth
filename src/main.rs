@@ -2,6 +2,7 @@ mod app;
 mod board;
 mod buttons;
 mod camera;
+mod detection;
 mod display;
 mod live_view;
 mod memory;

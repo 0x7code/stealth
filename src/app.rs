@@ -1,11 +1,11 @@
-//! Application startup and the camera's Photo, Menu, and Gallery modes.
+//! Application startup and the camera's Photo, Menu, Gallery, and Detect modes.
 
 use std::time::Instant;
 
 use crate::{
     board, buttons,
     camera::{self, CameraFrame},
-    display,
+    detection, display,
     live_view::{ControlEvent, LiveView, LiveViewAction},
     memory, rotary, sd_card,
 };
@@ -46,7 +46,7 @@ struct Gallery {
 }
 
 struct Detect {
-    detector: camera::Detector,
+    worker: detection::DetectionWorker,
 }
 
 /// A physical control action before it is interpreted by the current application mode.
@@ -286,7 +286,9 @@ fn run_menu(
             MenuItem::Detect => match start_detector(sd_card) {
                 Ok(detector) => {
                     display.show_message("detecting")?;
-                    return Ok(Some(Mode::Detect(Detect { detector })));
+                    return Ok(Some(Mode::Detect(Detect {
+                        worker: detection::DetectionWorker::start(detector)?,
+                    })));
                 }
                 Err(error) => {
                     log::warn!("cannot enter detection mode: {error:#}");
@@ -366,20 +368,9 @@ fn run_detect_frame(
         return Ok(Some(Mode::Menu(Menu::detect())));
     }
 
-    let started = Instant::now();
-    let detections = detect.detector.detect(frame)?;
-    log::info!(
-        "ESP-DL detection: {} result(s) in {} ms",
-        detections.len(),
-        started.elapsed().as_millis()
-    );
-    if let Some(detection) = detections.first() {
-        log::info!(
-            "ESP-DL best match: {} ({:.0}%)",
-            detection.label(),
-            detection.score * 100.0
-        );
-    }
+    detect.worker.submit(frame)?;
+    let latest_detections = detect.worker.latest()?;
+    let detections = latest_detections.as_deref().unwrap_or_default();
     let overlays: Vec<display::OverlayBox> = detections
         .iter()
         .map(|detection| display::OverlayBox {
@@ -389,10 +380,13 @@ fn run_detect_frame(
             bottom: detection.bottom,
         })
         .collect();
-    let label = detections
-        .first()
-        .map(camera::Detection::label)
-        .unwrap_or("no objects");
+    let label = detections.first().map(camera::Detection::label).unwrap_or(
+        if latest_detections.is_some() {
+            "no objects"
+        } else {
+            "detecting"
+        },
+    );
     display.draw_rgb565_scaled(
         frame.bytes(),
         frame.width(),
