@@ -13,8 +13,6 @@ const MAX_ZOOM: u8 = 3;
 /// A normalized control action, independent of the physical button or encoder that produced it.
 #[derive(Clone, Copy, Debug)]
 pub enum ControlEvent {
-    Previous,
-    Next,
     Capture,
     ZoomIn,
     ZoomOut,
@@ -46,8 +44,6 @@ impl LiveView {
     /// Update the visible state and report whether the application should save a frame.
     pub fn handle(&mut self, event: ControlEvent, now: Instant) -> LiveViewAction {
         match event {
-            ControlEvent::Previous => self.show_confirmation("previous", now),
-            ControlEvent::Next => self.show_confirmation("next", now),
             ControlEvent::Capture => return LiveViewAction::Capture,
             ControlEvent::ZoomIn => {
                 self.zoom = (self.zoom + 1).min(MAX_ZOOM);

@@ -166,6 +166,58 @@ impl Display {
         Ok(())
     }
 
+    /// Show the two application modes and highlight the currently selected one.
+    pub fn show_mode_menu(&mut self, gallery_selected: bool) -> anyhow::Result<()> {
+        self.clear(Rgb565::BLACK)?;
+        let centered = TextStyleBuilder::new()
+            .alignment(Alignment::Center)
+            .baseline(Baseline::Middle)
+            .build();
+        let title_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
+        let photo_style = MonoTextStyle::new(
+            &FONT_10X20,
+            if gallery_selected {
+                Rgb565::WHITE
+            } else {
+                Rgb565::GREEN
+            },
+        );
+        let gallery_style = MonoTextStyle::new(
+            &FONT_10X20,
+            if gallery_selected {
+                Rgb565::GREEN
+            } else {
+                Rgb565::WHITE
+            },
+        );
+        let center_x = i32::from(LCD_WIDTH) / 2;
+        self.draw(&Text::with_text_style(
+            "mode",
+            Point::new(center_x, 55),
+            title_style,
+            centered,
+        ))?;
+        self.draw(&Text::with_text_style(
+            "photo",
+            Point::new(center_x, 105),
+            photo_style,
+            centered,
+        ))?;
+        self.draw(&Text::with_text_style(
+            "gallery",
+            Point::new(center_x, 145),
+            gallery_style,
+            centered,
+        ))?;
+        self.draw(&Text::with_text_style(
+            "turn + enter",
+            Point::new(center_x, 205),
+            title_style,
+            centered,
+        ))?;
+        Ok(())
+    }
+
     /// Scale a packed, little-endian RGB565 camera frame to fill the LCD.
     ///
     /// The camera keeps ownership of `pixels`; this method streams each sampled pixel straight
@@ -242,6 +294,77 @@ impl Display {
                 scaled_pixels,
             )
             .map_err(|err| anyhow::anyhow!("failed to stream camera frame to display: {err:?}"))
+    }
+
+    /// Scale a packed RGB888 image to fill the LCD.
+    ///
+    /// Gallery JPEGs use this path so their red, green, and blue components are converted
+    /// explicitly to the panel's RGB565 pixels rather than relying on a hardware byte order.
+    pub fn draw_rgb888_scaled(
+        &mut self,
+        pixels: &[u8],
+        source_width: u32,
+        source_height: u32,
+        source_stride: u32,
+        confirmation: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let required_bytes = usize::try_from(source_stride)
+            .ok()
+            .and_then(|stride| {
+                usize::try_from(source_height)
+                    .ok()
+                    .and_then(|height| stride.checked_mul(height))
+            })
+            .ok_or_else(|| anyhow::anyhow!("gallery image dimensions overflow"))?;
+        let minimum_stride = source_width
+            .checked_mul(3)
+            .ok_or_else(|| anyhow::anyhow!("gallery image width overflows RGB888 stride"))?;
+        if source_width == 0
+            || source_height == 0
+            || source_stride < minimum_stride
+            || pixels.len() < required_bytes
+        {
+            anyhow::bail!("gallery returned an invalid RGB888 image");
+        }
+
+        let lcd_width = u32::from(LCD_WIDTH);
+        let lcd_height = u32::from(LCD_HEIGHT);
+        let source_stride = usize::try_from(source_stride)
+            .map_err(|_| anyhow::anyhow!("gallery image stride does not fit usize"))?;
+        let crop_size = source_width.min(source_height);
+        let crop_x = (source_width - crop_size) / 2;
+        let crop_y = (source_height - crop_size) / 2;
+        let scaled_pixels = (0..lcd_height * lcd_width).map(|display_pixel| {
+            let x = display_pixel % lcd_width;
+            let y = display_pixel / lcd_width;
+            if let Some(message) = confirmation {
+                if y >= lcd_height - CONFIRMATION_HEIGHT {
+                    return if is_confirmation_text_pixel(x, y, message) {
+                        Rgb565::WHITE
+                    } else {
+                        Rgb565::BLACK
+                    };
+                }
+            }
+
+            let source_x = crop_x + x * crop_size / lcd_width;
+            let source_y = crop_y + y * crop_size / lcd_height;
+            let byte_offset = usize::try_from(source_y).expect("source coordinate fits usize")
+                * source_stride
+                + usize::try_from(source_x).expect("source coordinate fits usize") * 3;
+            Rgb565::new(
+                pixels[byte_offset] >> 3,
+                pixels[byte_offset + 1] >> 2,
+                pixels[byte_offset + 2] >> 3,
+            )
+        });
+
+        self.panel
+            .fill_contiguous(
+                &Rectangle::new(Point::zero(), Size::new(lcd_width, lcd_height)),
+                scaled_pixels,
+            )
+            .map_err(|err| anyhow::anyhow!("failed to stream gallery image to display: {err:?}"))
     }
 
     /// Play a two-second, asset-free boot animation and leave the display ready for the app.

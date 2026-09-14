@@ -21,6 +21,8 @@ const LOG_PATH: &str = "/sdcard/stealth.log";
 // ESP-IDF's default FAT configuration on this board uses 8.3 filenames. `IMG00000.JPG` keeps
 // both the base name and extension within that limit.
 const CAPTURE_PATH_PREFIX: &str = "/sdcard/IMG";
+const CAPTURE_NAME_PREFIX: &str = "IMG";
+const CAPTURE_EXTENSION: &str = ".JPG";
 const MAX_CAPTURE_FILES: u32 = 100_000;
 
 // The P4X-EYE connects its MicroSD socket to SDMMC slot 0's native pins.
@@ -67,6 +69,19 @@ pub struct SdCard {
     _host: SDMMC0<'static>,
     _ldo4: LDO4<'static, Adjustable>,
     _card_enable: PinDriver<'static, Output>,
+}
+
+/// One JPEG capture found on the MicroSD card.
+#[derive(Clone, Debug)]
+pub struct Capture {
+    path: String,
+}
+
+impl Capture {
+    /// The 8.3 filename displayed in the gallery, such as `IMG00000.JPG`.
+    pub fn name(&self) -> &str {
+        self.path.rsplit('/').next().unwrap_or(&self.path)
+    }
 }
 
 struct MountedCard {
@@ -186,6 +201,39 @@ impl SdCard {
         Ok(path)
     }
 
+    /// List JPEGs created by this camera, in filename order.
+    pub fn captures(&mut self) -> anyhow::Result<Vec<Capture>> {
+        self.mount().context("MicroSD is unavailable")?;
+        let entries = fs::read_dir("/sdcard").context("failed to list MicroSD captures")?;
+        let mut captures = Vec::new();
+        for entry in entries {
+            let entry = entry.context("failed to inspect a MicroSD directory entry")?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if is_capture_name(name) {
+                captures.push(Capture {
+                    path: format!("/sdcard/{name}"),
+                });
+            }
+        }
+        captures.sort_by(|left, right| left.path.cmp(&right.path));
+        Ok(captures)
+    }
+
+    /// Load a gallery JPEG into memory for hardware decoding.
+    pub fn read_capture(&mut self, capture: &Capture) -> anyhow::Result<Vec<u8>> {
+        self.mount().context("MicroSD is unavailable")?;
+        fs::read(&capture.path).context("failed to read JPEG capture from MicroSD")
+    }
+
+    /// Permanently remove one gallery JPEG from the MicroSD card.
+    pub fn delete_capture(&mut self, capture: &Capture) -> anyhow::Result<()> {
+        self.mount().context("MicroSD is unavailable")?;
+        fs::remove_file(&capture.path).context("failed to delete JPEG capture from MicroSD")
+    }
+
     fn require_mount(&self) -> anyhow::Result<()> {
         if self.mounted.is_none() {
             anyhow::bail!("MicroSD is not mounted")
@@ -286,4 +334,14 @@ fn create_capture_file(extension: &str) -> anyhow::Result<(String, File)> {
     }
 
     anyhow::bail!("no free camera-capture filenames remain on MicroSD")
+}
+
+fn is_capture_name(name: &str) -> bool {
+    let Some(number) = name
+        .strip_prefix(CAPTURE_NAME_PREFIX)
+        .and_then(|name| name.strip_suffix(CAPTURE_EXTENSION))
+    else {
+        return false;
+    };
+    number.len() == 5 && number.bytes().all(|byte| byte.is_ascii_digit())
 }

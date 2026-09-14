@@ -21,6 +21,11 @@ pub struct EncodedJpeg {
     raw: sys::camera_bridge_jpeg_t,
 }
 
+/// A hardware-decoded RGB888 JPEG image owned by the camera bridge.
+pub struct DecodedJpeg {
+    raw: sys::camera_bridge_image_t,
+}
+
 impl Camera {
     /// Start the P4X-EYE's OV2710 MIPI-CSI camera in RGB565 mode.
     pub fn start(hardware: CameraHardware) -> anyhow::Result<Self> {
@@ -89,9 +94,46 @@ impl EncodedJpeg {
     }
 }
 
+/// Decode a saved JPEG with the ESP32-P4 hardware codec for Gallery rendering.
+pub fn decode_jpeg(jpeg: &[u8]) -> anyhow::Result<DecodedJpeg> {
+    u32::try_from(jpeg.len()).map_err(|_| anyhow::anyhow!("JPEG is too large"))?;
+    let mut raw = sys::camera_bridge_image_t::default();
+    sys::EspError::convert(unsafe {
+        sys::camera_bridge_decode_jpeg(jpeg.as_ptr(), jpeg.len(), &mut raw)
+    })
+    .context("failed to decode JPEG for Gallery")?;
+
+    Ok(DecodedJpeg { raw })
+}
+
+impl DecodedJpeg {
+    pub fn rgb888_bytes(&self) -> &[u8] {
+        // The bridge allocates and validates this buffer, which remains valid until Drop.
+        unsafe { std::slice::from_raw_parts(self.raw.data.cast(), self.raw.length) }
+    }
+
+    pub fn width(&self) -> u32 {
+        self.raw.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.raw.height
+    }
+
+    pub fn stride(&self) -> u32 {
+        self.raw.bytes_per_line
+    }
+}
+
 impl Drop for EncodedJpeg {
     fn drop(&mut self) {
         unsafe { sys::camera_bridge_release_jpeg(&mut self.raw) };
+    }
+}
+
+impl Drop for DecodedJpeg {
+    fn drop(&mut self) {
+        unsafe { sys::camera_bridge_release_image(&mut self.raw) };
     }
 }
 

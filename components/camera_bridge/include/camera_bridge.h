@@ -35,11 +35,23 @@ typedef struct {
     size_t length;
 } camera_bridge_jpeg_t;
 
+/** A decoded RGB888 JPEG image allocated by the bridge. Release it with release_image. */
+typedef struct {
+    const uint8_t *data;
+    uint32_t width;
+    uint32_t height;
+    uint32_t bytes_per_line;
+    size_t length;
+} camera_bridge_image_t;
+
 esp_err_t camera_bridge_start(const camera_bridge_config_t *config);
 esp_err_t camera_bridge_next_frame(camera_bridge_frame_t *frame);
 esp_err_t camera_bridge_release_frame(void);
 esp_err_t camera_bridge_encode_jpeg(const camera_bridge_frame_t *frame, camera_bridge_jpeg_t *jpeg);
 void camera_bridge_release_jpeg(camera_bridge_jpeg_t *jpeg);
+esp_err_t camera_bridge_decode_jpeg(const uint8_t *jpeg, size_t jpeg_length,
+                                    camera_bridge_image_t *image);
+void camera_bridge_release_image(camera_bridge_image_t *image);
 esp_err_t camera_bridge_stop(void);
 
 #ifdef __cplusplus
