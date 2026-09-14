@@ -50,6 +50,25 @@ type St7789Interface =
     SpiInterface<'static, SpiDeviceDriver<'static, SpiDriver<'static>>, PinDriver<'static, Output>>;
 type St7789Panel = mipidsi::Display<St7789Interface, ST7789, PinDriver<'static, Output>>;
 
+/// An outline to be composited into a scaled camera frame.
+///
+/// Coordinates refer to the original camera image, not the 240×240 LCD. Keeping the geometry in
+/// source coordinates lets the overlay follow the same crop and zoom transform as the preview.
+#[derive(Clone, Copy, Debug)]
+pub struct OverlayBox {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+/// Optional UI composited into a camera frame while it is streamed to the LCD.
+pub struct CameraRenderOptions<'a> {
+    pub zoom: u8,
+    pub confirmation: Option<&'a str>,
+    pub overlays: &'a [OverlayBox],
+}
+
 /// P4X-EYE peripherals used exclusively by the ST7789 display.
 ///
 /// `board::P4xEye` is responsible for assembling this from the board-wide peripheral set.
@@ -166,8 +185,8 @@ impl Display {
         Ok(())
     }
 
-    /// Show the two application modes and highlight the currently selected one.
-    pub fn show_mode_menu(&mut self, gallery_selected: bool) -> anyhow::Result<()> {
+    /// Show the application modes and highlight the item at `selected`.
+    pub fn show_mode_menu(&mut self, selected: usize) -> anyhow::Result<()> {
         self.clear(Rgb565::BLACK)?;
         let centered = TextStyleBuilder::new()
             .alignment(Alignment::Center)
@@ -176,15 +195,23 @@ impl Display {
         let title_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
         let photo_style = MonoTextStyle::new(
             &FONT_10X20,
-            if gallery_selected {
-                Rgb565::WHITE
-            } else {
+            if selected == 0 {
                 Rgb565::GREEN
+            } else {
+                Rgb565::WHITE
             },
         );
         let gallery_style = MonoTextStyle::new(
             &FONT_10X20,
-            if gallery_selected {
+            if selected == 1 {
+                Rgb565::GREEN
+            } else {
+                Rgb565::WHITE
+            },
+        );
+        let detect_style = MonoTextStyle::new(
+            &FONT_10X20,
+            if selected == 2 {
                 Rgb565::GREEN
             } else {
                 Rgb565::WHITE
@@ -210,8 +237,14 @@ impl Display {
             centered,
         ))?;
         self.draw(&Text::with_text_style(
+            "detect",
+            Point::new(center_x, 175),
+            detect_style,
+            centered,
+        ))?;
+        self.draw(&Text::with_text_style(
             "turn + enter",
-            Point::new(center_x, 205),
+            Point::new(center_x, 220),
             title_style,
             centered,
         ))?;
@@ -228,8 +261,7 @@ impl Display {
         source_width: u32,
         source_height: u32,
         source_stride: u32,
-        zoom: u8,
-        confirmation: Option<&str>,
+        options: CameraRenderOptions<'_>,
     ) -> anyhow::Result<()> {
         let required_bytes = usize::try_from(source_stride)
             .ok()
@@ -247,7 +279,7 @@ impl Display {
             || source_height == 0
             || source_stride < minimum_stride
             || pixels.len() < required_bytes
-            || !(1..=3).contains(&zoom)
+            || !(1..=3).contains(&options.zoom)
         {
             anyhow::bail!("camera returned an invalid RGB565 frame");
         }
@@ -261,13 +293,13 @@ impl Display {
         // stretched faces and objects. Mipidsi batches this iterator into its 512-byte SPI
         // transfer buffer, so this remains one LCD window rather than 57,600 independent pixel
         // transactions.
-        let crop_size = source_width.min(source_height) / u32::from(zoom);
+        let crop_size = source_width.min(source_height) / u32::from(options.zoom);
         let crop_x = (source_width - crop_size) / 2;
         let crop_y = (source_height - crop_size) / 2;
         let scaled_pixels = (0..lcd_height * lcd_width).map(|display_pixel| {
             let x = display_pixel % lcd_width;
             let y = display_pixel / lcd_width;
-            if let Some(message) = confirmation {
+            if let Some(message) = options.confirmation {
                 if y >= lcd_height - CONFIRMATION_HEIGHT {
                     return if is_confirmation_text_pixel(x, y, message) {
                         Rgb565::WHITE
@@ -281,6 +313,14 @@ impl Display {
             let byte_offset = usize::try_from(source_y).expect("source coordinate fits usize")
                 * source_stride
                 + usize::try_from(source_x).expect("source coordinate fits usize") * 2;
+
+            if options
+                .overlays
+                .iter()
+                .any(|overlay| is_overlay_pixel(source_x, source_y, overlay))
+            {
+                return Rgb565::GREEN;
+            }
 
             Rgb565::from(RawU16::new(u16::from_le_bytes([
                 pixels[byte_offset],
@@ -400,6 +440,31 @@ impl Display {
 
         self.show_message("ready")
     }
+}
+
+/// Return whether a source pixel lies on a detection-box outline.
+///
+/// The source camera is much larger than the LCD. A six-pixel source line remains visible after
+/// downscaling without hiding much of the detected object.
+fn is_overlay_pixel(x: u32, y: u32, overlay: &OverlayBox) -> bool {
+    const LINE_WIDTH: i32 = 6;
+    let x = match i32::try_from(x) {
+        Ok(x) => x,
+        Err(_) => return false,
+    };
+    let y = match i32::try_from(y) {
+        Ok(y) => y,
+        Err(_) => return false,
+    };
+    let left = overlay.left.min(overlay.right);
+    let right = overlay.left.max(overlay.right);
+    let top = overlay.top.min(overlay.bottom);
+    let bottom = overlay.top.max(overlay.bottom);
+    let inside_horizontal = x >= left && x <= right;
+    let inside_vertical = y >= top && y <= bottom;
+
+    (inside_horizontal && ((y - top).abs() < LINE_WIDTH || (y - bottom).abs() < LINE_WIDTH))
+        || (inside_vertical && ((x - left).abs() < LINE_WIDTH || (x - right).abs() < LINE_WIDTH))
 }
 
 /// Return whether a pixel belongs to the centered FONT_10X20 confirmation text.

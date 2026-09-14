@@ -18,3 +18,19 @@ CONFIG_SPIRAM_SPEED_200M=y
 CONFIG_CAMERA_XCLK_USE_ESP_CLOCK_ROUTER=y
 CONFIG_CAMERA_OV2710=y
 CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER=y
+
+# Cargo optimises the Rust application through its profiles. ESP-IDF C/C++ components have their
+# own setting, and ESP-DL's P4 vector kernels need -O2 rather than the default debug -Og.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# The 320×320 detector needs considerably less PSRAM and time than the 640×640 alternative.
+# Its model file stays on the MicroSD card at models/p4/coco_detect_yolo11n_320_s8_v1.espdl.
+CONFIG_COCO_DETECT_MODEL_IN_SDCARD=y
+CONFIG_COCO_DETECT_YOLO11N_320_S8_V1=y
+
+# ESP-DL's COCO model has a filename longer than FAT's legacy 8.3 limit.
+# Keep the temporary long-filename buffer on the heap rather than the main
+# task stack, which is already shared with the camera application.
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255
+CONFIG_FATFS_API_ENCODING_UTF_8=y

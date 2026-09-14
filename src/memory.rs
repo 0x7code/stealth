@@ -1,4 +1,4 @@
-//! Heap telemetry used to budget PSRAM between Gallery and future inference modes.
+//! Heap telemetry used to budget PSRAM between Gallery and ESP-DL detection modes.
 
 use esp_idf_svc::sys;
 

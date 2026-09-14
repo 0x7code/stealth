@@ -18,6 +18,7 @@ use esp_idf_svc::sys;
 
 const MOUNT_PATH: &[u8] = b"/sdcard\0";
 const LOG_PATH: &str = "/sdcard/stealth.log";
+const COCO_MODEL_PATH: &str = "/sdcard/models/p4/coco_detect_yolo11n_320_s8_v1.espdl";
 // ESP-IDF's default FAT configuration on this board uses 8.3 filenames. `IMG00000.JPG` keeps
 // both the base name and extension within that limit.
 const CAPTURE_PATH_PREFIX: &str = "/sdcard/IMG";
@@ -232,6 +233,16 @@ impl SdCard {
     pub fn delete_capture(&mut self, capture: &Capture) -> anyhow::Result<()> {
         self.mount().context("MicroSD is unavailable")?;
         fs::remove_file(&capture.path).context("failed to delete JPEG capture from MicroSD")
+    }
+
+    /// Return whether the ESP-DL 320×320 COCO model is present on this card.
+    pub fn has_coco_detector_model(&mut self) -> anyhow::Result<bool> {
+        self.mount().context("MicroSD is unavailable")?;
+        match fs::metadata(COCO_MODEL_PATH) {
+            Ok(metadata) => Ok(metadata.is_file()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error).context("failed to inspect ESP-DL COCO model on MicroSD"),
+        }
     }
 
     fn require_mount(&self) -> anyhow::Result<()> {

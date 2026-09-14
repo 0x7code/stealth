@@ -25,16 +25,28 @@ enum Mode {
     Photo(LiveView),
     Menu(Menu),
     Gallery(Gallery),
+    Detect(Detect),
 }
 
 struct Menu {
-    gallery_selected: bool,
+    selected: MenuItem,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MenuItem {
+    Photo,
+    Gallery,
+    Detect,
 }
 
 struct Gallery {
     captures: Vec<sd_card::Capture>,
     selected: usize,
     delete_pending: bool,
+}
+
+struct Detect {
+    detector: camera::Detector,
 }
 
 /// A physical control action before it is interpreted by the current application mode.
@@ -118,14 +130,19 @@ impl App {
                     drop(frame);
                     run_gallery(display, sd_card, gallery, input)
                 }
+                Mode::Detect(detect) => run_detect_frame(display, detect, input, &frame),
             };
 
             match next_mode {
                 Ok(Some(next_mode)) => {
                     let leaving_gallery = matches!(mode, Mode::Gallery(_));
+                    let leaving_detection = matches!(mode, Mode::Detect(_));
                     *mode = next_mode;
                     if leaving_gallery {
                         memory::log_free("Gallery exited");
+                    }
+                    if leaving_detection {
+                        memory::log_free("Detection exited");
                     }
                 }
                 Ok(None) => {}
@@ -138,18 +155,36 @@ impl App {
 impl Menu {
     fn photo() -> Self {
         Self {
-            gallery_selected: false,
+            selected: MenuItem::Photo,
         }
     }
 
     fn gallery() -> Self {
         Self {
-            gallery_selected: true,
+            selected: MenuItem::Gallery,
+        }
+    }
+
+    fn detect() -> Self {
+        Self {
+            selected: MenuItem::Detect,
         }
     }
 
     fn toggle(&mut self) {
-        self.gallery_selected = !self.gallery_selected;
+        self.selected = match self.selected {
+            MenuItem::Photo => MenuItem::Gallery,
+            MenuItem::Gallery => MenuItem::Detect,
+            MenuItem::Detect => MenuItem::Photo,
+        };
+    }
+
+    fn selected_index(&self) -> usize {
+        match self.selected {
+            MenuItem::Photo => 0,
+            MenuItem::Gallery => 1,
+            MenuItem::Detect => 2,
+        }
     }
 }
 
@@ -195,7 +230,7 @@ fn run_photo_frame(
     now: Instant,
 ) -> anyhow::Result<Option<Mode>> {
     if matches!(input, Some(InputEvent::Previous | InputEvent::Next)) {
-        display.show_mode_menu(false)?;
+        display.show_mode_menu(Menu::photo().selected_index())?;
         return Ok(Some(Mode::Menu(Menu::photo())));
     }
 
@@ -208,8 +243,11 @@ fn run_photo_frame(
         frame.width(),
         frame.height(),
         frame.stride(),
-        live_view.zoom(now),
-        live_view.confirmation(now),
+        display::CameraRenderOptions {
+            zoom: live_view.zoom(now),
+            confirmation: live_view.confirmation(now),
+            overlays: &[],
+        },
     )?;
     Ok(None)
 }
@@ -231,20 +269,30 @@ fn run_menu(
         | InputEvent::Next
         | InputEvent::Clockwise => {
             menu.toggle();
-            display.show_mode_menu(menu.gallery_selected)?;
+            display.show_mode_menu(menu.selected_index())?;
         }
-        InputEvent::Enter | InputEvent::RotaryPressed if !menu.gallery_selected => {
-            return Ok(Some(Mode::Photo(LiveView::new())));
-        }
-        InputEvent::Enter | InputEvent::RotaryPressed => match Gallery::load(sd_card) {
-            Ok(gallery) => {
-                render_gallery(display, sd_card, &gallery)?;
-                return Ok(Some(Mode::Gallery(gallery)));
-            }
-            Err(error) => {
-                log::warn!("cannot open gallery: {error:#}");
-                display.show_message("no sd card")?;
-            }
+        InputEvent::Enter | InputEvent::RotaryPressed => match menu.selected {
+            MenuItem::Photo => return Ok(Some(Mode::Photo(LiveView::new()))),
+            MenuItem::Gallery => match Gallery::load(sd_card) {
+                Ok(gallery) => {
+                    render_gallery(display, sd_card, &gallery)?;
+                    return Ok(Some(Mode::Gallery(gallery)));
+                }
+                Err(error) => {
+                    log::warn!("cannot open gallery: {error:#}");
+                    display.show_message("no sd card")?;
+                }
+            },
+            MenuItem::Detect => match start_detector(sd_card) {
+                Ok(detector) => {
+                    display.show_message("detecting")?;
+                    return Ok(Some(Mode::Detect(Detect { detector })));
+                }
+                Err(error) => {
+                    log::warn!("cannot enter detection mode: {error:#}");
+                    display.show_message("add coco model")?;
+                }
+            },
         },
     }
     Ok(None)
@@ -265,7 +313,7 @@ fn run_gallery(
     // explicit confirmation. This leaves Enter as the dedicated delete/confirm control.
     if matches!(input, InputEvent::RotaryPressed) && !gallery.delete_pending {
         camera::release_gallery_decoder()?;
-        display.show_mode_menu(true)?;
+        display.show_mode_menu(Menu::gallery().selected_index())?;
         return Ok(Some(Mode::Menu(Menu::gallery())));
     }
 
@@ -302,6 +350,68 @@ fn run_gallery(
     }
     render_gallery(display, sd_card, gallery)?;
     Ok(None)
+}
+
+fn run_detect_frame(
+    display: &mut display::Display,
+    detect: &mut Detect,
+    input: Option<InputEvent>,
+    frame: &CameraFrame<'_>,
+) -> anyhow::Result<Option<Mode>> {
+    if matches!(
+        input,
+        Some(InputEvent::Previous | InputEvent::Next | InputEvent::RotaryPressed)
+    ) {
+        display.show_mode_menu(Menu::detect().selected_index())?;
+        return Ok(Some(Mode::Menu(Menu::detect())));
+    }
+
+    let started = Instant::now();
+    let detections = detect.detector.detect(frame)?;
+    log::info!(
+        "ESP-DL detection: {} result(s) in {} ms",
+        detections.len(),
+        started.elapsed().as_millis()
+    );
+    if let Some(detection) = detections.first() {
+        log::info!(
+            "ESP-DL best match: {} ({:.0}%)",
+            detection.label(),
+            detection.score * 100.0
+        );
+    }
+    let overlays: Vec<display::OverlayBox> = detections
+        .iter()
+        .map(|detection| display::OverlayBox {
+            left: detection.left,
+            top: detection.top,
+            right: detection.right,
+            bottom: detection.bottom,
+        })
+        .collect();
+    let label = detections
+        .first()
+        .map(camera::Detection::label)
+        .unwrap_or("no objects");
+    display.draw_rgb565_scaled(
+        frame.bytes(),
+        frame.width(),
+        frame.height(),
+        frame.stride(),
+        display::CameraRenderOptions {
+            zoom: 1,
+            confirmation: Some(label),
+            overlays: &overlays,
+        },
+    )?;
+    Ok(None)
+}
+
+fn start_detector(sd_card: &mut sd_card::SdCard) -> anyhow::Result<camera::Detector> {
+    if !sd_card.has_coco_detector_model()? {
+        anyhow::bail!("missing /sdcard/models/p4/coco_detect_yolo11n_320_s8_v1.espdl");
+    }
+    camera::Detector::start()
 }
 
 fn render_gallery(

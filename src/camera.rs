@@ -7,6 +7,8 @@ use crate::board::CameraHardware;
 use anyhow::Context;
 use esp_idf_svc::sys;
 
+const MAX_DETECTIONS: usize = 10;
+
 /// A running OV2710 video stream.
 pub struct Camera;
 
@@ -25,6 +27,22 @@ pub struct EncodedJpeg {
 pub struct DecodedJpeg {
     raw: sys::camera_bridge_image_t,
 }
+
+/// An object found by the ESP-DL COCO detector.
+#[derive(Clone, Copy, Debug)]
+pub struct Detection {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+    pub category: i32,
+    pub score: f32,
+}
+
+/// The lazily loaded ESP-DL COCO detector.
+///
+/// It owns the C++ detector singleton and releases its PSRAM allocations when dropped.
+pub struct Detector;
 
 impl Camera {
     /// Start the P4X-EYE's OV2710 MIPI-CSI camera in RGB565 mode.
@@ -87,6 +105,51 @@ impl CameraFrame<'_> {
     }
 }
 
+impl Detector {
+    /// Prepare the 320×320 COCO detector for its first frame.
+    ///
+    /// The model itself is loaded on the first [`Self::detect`] call from the configured MicroSD
+    /// path. This allows entering Photo mode without reserving the detector's tensor arena.
+    pub fn start() -> anyhow::Result<Self> {
+        sys::EspError::convert(unsafe { sys::camera_bridge_detector_start() })
+            .context("failed to create ESP-DL COCO detector")?;
+        Ok(Self)
+    }
+
+    /// Run object detection on one camera-owned RGB565 frame.
+    pub fn detect(&mut self, frame: &CameraFrame<'_>) -> anyhow::Result<Vec<Detection>> {
+        let mut raw = [sys::camera_bridge_detection_t::default(); MAX_DETECTIONS];
+        let mut count = 0;
+        sys::EspError::convert(unsafe {
+            sys::camera_bridge_detector_run(&frame.raw, raw.as_mut_ptr(), raw.len(), &mut count)
+        })
+        .context("ESP-DL COCO inference failed")?;
+
+        let count = count.min(raw.len());
+        Ok(raw[..count]
+            .iter()
+            .map(|detection| Detection {
+                left: detection.left,
+                top: detection.top,
+                right: detection.right,
+                bottom: detection.bottom,
+                category: detection.category,
+                score: detection.score,
+            })
+            .collect())
+    }
+}
+
+impl Detection {
+    /// The standard COCO class label for this detection, when the model reported a valid class.
+    pub fn label(&self) -> &'static str {
+        COCO_LABELS
+            .get(usize::try_from(self.category).unwrap_or(usize::MAX))
+            .copied()
+            .unwrap_or("object")
+    }
+}
+
 impl EncodedJpeg {
     pub fn bytes(&self) -> &[u8] {
         // The C bridge allocates and validates this buffer, which remains valid until Drop.
@@ -145,6 +208,12 @@ impl Drop for DecodedJpeg {
     }
 }
 
+impl Drop for Detector {
+    fn drop(&mut self) {
+        unsafe { sys::camera_bridge_detector_stop() };
+    }
+}
+
 impl Drop for CameraFrame<'_> {
     fn drop(&mut self) {
         // There is no useful recovery path here. Logging preserves the original LCD error,
@@ -160,3 +229,86 @@ impl Drop for Camera {
         let _ = unsafe { sys::camera_bridge_stop() };
     }
 }
+
+const COCO_LABELS: [&str; 80] = [
+    "person",
+    "bicycle",
+    "car",
+    "motorcycle",
+    "airplane",
+    "bus",
+    "train",
+    "truck",
+    "boat",
+    "traffic light",
+    "fire hydrant",
+    "stop sign",
+    "parking meter",
+    "bench",
+    "bird",
+    "cat",
+    "dog",
+    "horse",
+    "sheep",
+    "cow",
+    "elephant",
+    "bear",
+    "zebra",
+    "giraffe",
+    "backpack",
+    "umbrella",
+    "handbag",
+    "tie",
+    "suitcase",
+    "frisbee",
+    "skis",
+    "snowboard",
+    "sports ball",
+    "kite",
+    "baseball bat",
+    "baseball glove",
+    "skateboard",
+    "surfboard",
+    "tennis racket",
+    "bottle",
+    "wine glass",
+    "cup",
+    "fork",
+    "knife",
+    "spoon",
+    "bowl",
+    "banana",
+    "apple",
+    "sandwich",
+    "orange",
+    "broccoli",
+    "carrot",
+    "hot dog",
+    "pizza",
+    "donut",
+    "cake",
+    "chair",
+    "couch",
+    "potted plant",
+    "bed",
+    "dining table",
+    "toilet",
+    "tv",
+    "laptop",
+    "mouse",
+    "remote",
+    "keyboard",
+    "cell phone",
+    "microwave",
+    "oven",
+    "toaster",
+    "sink",
+    "refrigerator",
+    "book",
+    "clock",
+    "vase",
+    "scissors",
+    "teddy bear",
+    "hair drier",
+    "toothbrush",
+];
